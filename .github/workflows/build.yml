@@ -1,0 +1,27 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build app
+        run: make package
+
+      - name: Upload app
+        uses: actions/upload-artifact@v6
+        with:
+          name: Limon-macOS
+          path: Limon.app.zip
+          if-no-files-found: error
