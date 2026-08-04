@@ -15,7 +15,7 @@ cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 swiftc \
     -O \
     -parse-as-library \
-    -target "$(uname -m)-apple-macosx14.0" \
+    -target "$(uname -m)-apple-macosx15.0" \
     -framework SwiftUI \
     -framework AppKit \
     -o "$APP/Contents/MacOS/$BIN" \
