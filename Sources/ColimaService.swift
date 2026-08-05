@@ -40,12 +40,14 @@ struct DockerImage: Identifiable, Decodable, Hashable {
     let repository: String
     let tag: String
     let size: String
+    let createdSince: String
 
     enum CodingKeys: String, CodingKey {
         case imageID = "ID"
         case repository = "Repository"
         case tag = "Tag"
         case size = "Size"
+        case createdSince = "CreatedSince"
     }
 
     var id: String { "\(imageID) \(repository):\(tag)" }
@@ -63,6 +65,38 @@ struct DockerVolume: Identifiable, Decodable, Hashable {
     }
 
     var id: String { name }
+}
+
+struct ImageDetails: Decodable {
+    let id: String
+    let repoTags: [String]
+    let architecture: String
+    let os: String
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id"
+        case repoTags = "RepoTags"
+        case architecture = "Architecture"
+        case os = "Os"
+    }
+}
+
+struct VolumeDetails: Decodable {
+    let name: String
+    let driver: String
+    let mountpoint: String
+    let createdAt: String
+    let scope: String
+    let labels: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case name = "Name"
+        case driver = "Driver"
+        case mountpoint = "Mountpoint"
+        case createdAt = "CreatedAt"
+        case scope = "Scope"
+        case labels = "Labels"
+    }
 }
 
 @MainActor
@@ -218,6 +252,25 @@ final class ColimaService: ObservableObject {
         let decoder = JSONDecoder()
         return out.split(separator: "\n")
             .compactMap { try? decoder.decode(T.self, from: Data($0.utf8)) }
+    }
+
+    func imageDetails(_ ref: String) async -> ImageDetails? {
+        guard let docker else { return nil }
+        let out = await Self.run(docker, ["image", "inspect", ref]).out
+        return (try? JSONDecoder().decode([ImageDetails].self, from: Data(out.utf8)))?.first
+    }
+
+    func volumeDetails(_ name: String) async -> VolumeDetails? {
+        guard let docker else { return nil }
+        let out = await Self.run(docker, ["volume", "inspect", name]).out
+        return (try? JSONDecoder().decode([VolumeDetails].self, from: Data(out.utf8)))?.first
+    }
+
+    func volumeUsers(_ name: String) async -> [String] {
+        guard let docker else { return [] }
+        let out = await Self.run(docker, ["ps", "-a", "--filter", "volume=\(name)",
+                                          "--format", "{{.Names}}"]).out
+        return out.split(separator: "\n").map(String.init)
     }
 
 

@@ -17,9 +17,18 @@ struct LimonApp: App {
 }
 
 struct MenuPanel: View {
+    private enum Page: Equatable {
+        case main
+        case settings
+        case image(DockerImage)
+        case volume(DockerVolume)
+    }
+
     @ObservedObject var service: ColimaService
-    @State private var showingSettings = false
+    @State private var page = Page.main
     @State private var listContentHeight: CGFloat = 0
+    @State private var pageHeight: CGFloat = 0
+    @State private var pageSwapping = false
     @State private var imagesExpanded = false
     @State private var volumesExpanded = false
 
@@ -34,18 +43,50 @@ struct MenuPanel: View {
     }
 
     var body: some View {
-        Group {
-            if showingSettings {
-                SettingsPanel(back: { showingSettings = false })
-            } else {
+        ZStack(alignment: .top) {
+            switch page {
+            case .main:
                 mainPanel
+                    .reportPageHeight(setPageHeight)
+                    .transition(.opacity)
+                    .zIndex(0)
+            case .settings:
+                SettingsPanel(back: { page = .main })
+                    .reportPageHeight(setPageHeight)
+                    .slideOverPage()
+            case .image(let image):
+                ImageInfoPanel(image: image, service: service, back: { page = .main })
+                    .reportPageHeight(setPageHeight)
+                    .slideOverPage()
+            case .volume(let volume):
+                VolumeInfoPanel(volume: volume, service: service, back: { page = .main })
+                    .reportPageHeight(setPageHeight)
+                    .slideOverPage()
             }
         }
+        .animation(pageSpring, value: page)
         .frame(width: 320)
+        .frame(height: pageHeight == 0 ? nil : pageHeight, alignment: .top)
+        .clipped()
+        .onChange(of: page) {
+            pageSwapping = true
+            Task {
+                try? await Task.sleep(for: .milliseconds(600))
+                pageSwapping = false
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             if (note.object as? NSWindow)?.className.contains("MenuBarExtraWindow") == true {
-                showingSettings = false
+                page = .main
             }
+        }
+    }
+
+    private func setPageHeight(_ height: CGFloat) {
+        if pageHeight == 0 || !pageSwapping {
+            pageHeight = height
+        } else if height != pageHeight {
+            withAnimation(trailingSpring) { pageHeight = height }
         }
     }
 
@@ -231,7 +272,9 @@ struct MenuPanel: View {
                     .padding(.leading, 13)
             }
             ForEach(tagged) { image in
-                CopyRow(text: image.name, detail: image.size)
+                ItemRow(text: image.name, detail: image.size) {
+                    page = .image(image)
+                }
             }
             if dangling > 0 {
                 PruneRow(label: dangling == 1 ? "1 dangling image" : "\(dangling) dangling images") {
@@ -260,7 +303,9 @@ struct MenuPanel: View {
                     .padding(.leading, 13)
             }
             ForEach(service.volumes) { volume in
-                CopyRow(text: volume.name, detail: volume.driver)
+                ItemRow(text: volume.name, detail: volume.driver) {
+                    page = .volume(volume)
+                }
             }
             let unused = service.unusedVolumes.count
             if unused > 0 {
@@ -297,7 +342,7 @@ struct MenuPanel: View {
 
     private var settingsRow: some View {
         Button {
-            showingSettings = true
+            page = .settings
         } label: {
             HStack {
                 Text("Settings")
@@ -327,21 +372,7 @@ private struct SettingsPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Button(action: back) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 16, height: 16)
-                }
-                .buttonStyle(.borderless)
-                .hoverHighlight(3)
-                .help("Back")
-                Text("Settings")
-                    .font(.headline)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            PanelHeader(title: "Settings", back: back)
 
             Divider()
 
@@ -409,6 +440,184 @@ private struct SettingsPanel: View {
             NSSound.beep()
         }
     }
+}
+
+private struct PanelHeader: View {
+    let title: String
+    let back: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: back) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .hoverHighlight(3)
+            .help("Back")
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct InfoRow: View {
+    let label: String
+    let value: String
+
+    init(_ label: String, _ value: String) {
+        self.label = label
+        self.value = value
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .leading)
+            Text(value)
+                .font(.callout)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct ActionRow: View {
+    let title: String
+    var destructive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverHighlight()
+        .padding(.horizontal, 4)
+        .padding(.vertical, 1)
+    }
+}
+
+private struct ImageInfoPanel: View {
+    let image: DockerImage
+    @ObservedObject var service: ColimaService
+    let back: () -> Void
+
+    @State private var details: ImageDetails?
+
+    private var usedBy: [String] {
+        service.containers.filter { $0.image == image.name }.map(\.name)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: image.name, back: back)
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                InfoRow("ID", details.map { String($0.id.replacingOccurrences(of: "sha256:", with: "").prefix(12)) } ?? image.imageID)
+                InfoRow("Size", image.size)
+                InfoRow("Created", image.createdSince)
+                InfoRow("Platform", details.map { "\($0.os)/\($0.architecture)" } ?? "…")
+                InfoRow("Used by", usedBy.isEmpty ? "no containers" : usedBy.joined(separator: ", "))
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            VStack(spacing: 0) {
+                ActionRow(title: "Copy Tag") { copyToPasteboard(image.name) }
+                ActionRow(title: "Copy ID") { copyToPasteboard(details?.id ?? image.imageID) }
+                ActionRow(title: "Delete Image", destructive: true) {
+                    service.dockerAction(["rmi", image.name],
+                                         label: "removing \(image.name)")
+                    back()
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .task { details = await service.imageDetails(image.name) }
+    }
+}
+
+private struct VolumeInfoPanel: View {
+    let volume: DockerVolume
+    @ObservedObject var service: ColimaService
+    let back: () -> Void
+
+    @State private var details: VolumeDetails?
+    @State private var users: [String]?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: volume.name, back: back)
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                InfoRow("Driver", volume.driver)
+                InfoRow("Created", details.map { formatDockerDate($0.createdAt) } ?? "…")
+                InfoRow("Mountpoint", details?.mountpoint ?? "…")
+                InfoRow("Scope", details?.scope ?? "…")
+                InfoRow("Compose", details.map { $0.labels?["com.docker.compose.project"] ?? "—" } ?? "…")
+                InfoRow("Used by", users.map { $0.isEmpty ? "no containers" : $0.joined(separator: ", ") } ?? "…")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+
+            VStack(spacing: 0) {
+                ActionRow(title: "Copy Name") { copyToPasteboard(volume.name) }
+                ActionRow(title: "Copy Mountpoint") {
+                    if let mountpoint = details?.mountpoint { copyToPasteboard(mountpoint) }
+                }
+                .disabled(details == nil)
+                ActionRow(title: "Delete Volume", destructive: true) {
+                    service.dockerAction(["volume", "rm", volume.name],
+                                         label: "removing \(volume.name)")
+                    back()
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .task {
+            async let fetched = service.volumeDetails(volume.name)
+            async let names = service.volumeUsers(volume.name)
+            details = await fetched
+            users = await names
+        }
+    }
+}
+
+private func formatDockerDate(_ raw: String) -> String {
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    var date = iso.date(from: raw)
+    if date == nil {
+        iso.formatOptions = [.withInternetDateTime]
+        date = iso.date(from: raw)
+    }
+    guard let date else { return raw }
+    return date.formatted(date: .abbreviated, time: .shortened)
 }
 
 private struct CheckRow: View {
@@ -550,6 +759,7 @@ private struct ExitedRow: View {
 
 private let accordionSpring = Animation.spring(duration: 0.3, bounce: 0.1)
 private let trailingSpring = Animation.spring(duration: 0.45, bounce: 0.15)
+private let pageSpring = Animation.spring(duration: 0.3, bounce: 0.05)
 
 private struct AccordionHeader: View {
     let title: String
@@ -580,14 +790,13 @@ private struct AccordionHeader: View {
     }
 }
 
-private struct CopyRow: View {
+private struct ItemRow: View {
     let text: String
     let detail: String
+    let open: () -> Void
 
     var body: some View {
-        Button {
-            copyToPasteboard(text)
-        } label: {
+        Button(action: open) {
             HStack(spacing: 6) {
                 Text(text)
                     .font(.callout)
@@ -603,7 +812,7 @@ private struct CopyRow: View {
         .buttonStyle(.plain)
         .hoverHighlight(3)
         .padding(.leading, 13)
-        .help("Copy \(text)")
+        .help("Show info")
     }
 }
 
@@ -628,12 +837,13 @@ private struct PruneRow: View {
 private struct IconButton: View {
     let systemImage: String
     let help: String
+    var closesPanel = true
     let action: () -> Void
 
     var body: some View {
         Button {
             action()
-            closePanel()
+            if closesPanel { closePanel() }
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 12, weight: .medium))
@@ -663,6 +873,18 @@ private struct HoverHighlight: ViewModifier {
 private extension View {
     func hoverHighlight(_ inset: CGFloat = 0) -> some View {
         modifier(HoverHighlight(inset: inset))
+    }
+
+    func reportPageHeight(_ update: @escaping (CGFloat) -> Void) -> some View {
+        onGeometryChange(for: CGFloat.self) { $0.size.height } action: { update($0) }
+    }
+
+    func slideOverPage() -> some View {
+        self.background(.regularMaterial)
+            .compositingGroup()
+            .shadow(color: .black.opacity(0.25), radius: 10, x: -5, y: 0)
+            .transition(.move(edge: .trailing))
+            .zIndex(1)
     }
 }
 
