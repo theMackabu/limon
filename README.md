@@ -23,15 +23,3 @@ shells and logs, restart workloads, and review images and volumes.
 make
 open "Limón.app"
 ```
-
-Other useful commands:
-
-```sh
-make run
-make package
-make install
-make clean
-```
-
-The local build is ad-hoc signed. A distributable release should be signed
-with an Apple Developer certificate and notarized.
