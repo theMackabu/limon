@@ -4,15 +4,24 @@ import ServiceManagement
 
 @main
 struct LimonApp: App {
-    @StateObject private var service = ColimaService()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuPanel(service: service)
-        } label: {
-            Text(service.title)
-        }
-        .menuBarExtraStyle(.window)
+        Settings { EmptyView() }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var controller: PanelController?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        controller = PanelController(service: ColimaService())
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        controller?.restoreMinimized()
+        return false
     }
 }
 
@@ -25,6 +34,8 @@ struct MenuPanel: View {
     }
 
     @ObservedObject var service: ColimaService
+    @EnvironmentObject private var panelState: PanelState
+    @Environment(\.dismissPanel) private var dismissPanel
     @State private var page = Page.main
     @State private var listContentHeight: CGFloat = 0
     @State private var pageHeight: CGFloat = 0
@@ -73,11 +84,6 @@ struct MenuPanel: View {
             Task {
                 try? await Task.sleep(for: .milliseconds(600))
                 pageSwapping = false
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-            if (note.object as? NSWindow)?.className.contains("MenuBarExtraWindow") == true {
-                page = .main
             }
         }
     }
@@ -135,8 +141,12 @@ struct MenuPanel: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        .padding(.leading, panelState.isDetached ? 40 : 0)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .gesture(WindowDragGesture())
+        .animation(.spring(duration: 0.35, bounce: 0.25), value: panelState.isDetached)
     }
 
     private var summary: String {
@@ -184,7 +194,7 @@ struct MenuPanel: View {
                     .foregroundStyle(.secondary)
                 Button("Start Colima") {
                     service.colimaAction(["start"], label: "starting colima")
-                    closePanel()
+                    dismissPanel()
                 }
                 .controlSize(.small)
             }
@@ -392,6 +402,7 @@ private struct SettingsPanel: View {
     let back: () -> Void
 
     @AppStorage("refreshSeconds") private var refreshSeconds = 5
+    @AppStorage("alwaysOnTop") private var alwaysOnTop = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
@@ -418,6 +429,9 @@ private struct SettingsPanel: View {
                 sectionLabel("General")
                 CheckRow(label: "Launch at Login", selected: launchAtLogin) {
                     toggleLoginItem()
+                }
+                CheckRow(label: "Windows Always on Top", selected: alwaysOnTop) {
+                    alwaysOnTop.toggle()
                 }
             }
             .padding(.horizontal, 12)
@@ -467,6 +481,7 @@ private struct SettingsPanel: View {
 }
 
 private struct PanelHeader: View {
+    @EnvironmentObject private var panelState: PanelState
     let title: String
     let back: () -> Void
 
@@ -486,8 +501,12 @@ private struct PanelHeader: View {
                 .truncationMode(.middle)
             Spacer()
         }
+        .padding(.leading, panelState.isDetached ? 40 : 0)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .gesture(WindowDragGesture())
+        .animation(.spring(duration: 0.35, bounce: 0.25), value: panelState.isDetached)
     }
 }
 
@@ -672,6 +691,7 @@ private struct CheckRow: View {
 private struct RunningRow: View {
     let container: DockerContainer
     @ObservedObject var service: ColimaService
+    @Environment(\.dismissPanel) private var dismissPanel
 
     var body: some View {
         HStack(spacing: 6) {
@@ -721,25 +741,25 @@ private struct RunningRow: View {
             Divider()
             Button("Logs") {
                 openLogs()
-                closePanel()
+                dismissPanel()
             }
             Button("Shell") {
                 service.openInTerminal([
                     service.docker ?? "docker",
                     "exec", "-it", container.shortID, "/bin/sh",
                 ])
-                closePanel()
+                dismissPanel()
             }
             Divider()
             Button("Restart") {
                 service.dockerAction(["restart", container.containerID],
                                      label: "restarting \(container.name)")
-                closePanel()
+                dismissPanel()
             }
             Button("Stop") {
                 service.dockerAction(["stop", container.containerID],
                                      label: "stopping \(container.name)")
-                closePanel()
+                dismissPanel()
             }
             Divider()
             Button("Copy Container ID") { copyToPasteboard(container.containerID) }
@@ -866,6 +886,7 @@ private struct PruneRow: View {
 
 
 private struct IconButton: View {
+    @Environment(\.dismissPanel) private var dismissPanel
     let systemImage: String
     let help: String
     var closesPanel = true
@@ -874,7 +895,7 @@ private struct IconButton: View {
     var body: some View {
         Button {
             action()
-            if closesPanel { closePanel() }
+            if closesPanel { dismissPanel() }
         } label: {
             Image(systemName: systemImage)
                 .font(.system(size: 12, weight: .medium))
@@ -922,11 +943,4 @@ private extension View {
 private func copyToPasteboard(_ string: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(string, forType: .string)
-}
-
-@MainActor
-private func closePanel() {
-    let panel = NSApp.windows.first { $0.className.contains("MenuBarExtraWindow") }
-        ?? NSApp.keyWindow
-    panel?.close()
 }
