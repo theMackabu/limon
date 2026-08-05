@@ -99,6 +99,16 @@ struct VolumeDetails: Decodable {
     }
 }
 
+enum PruneTarget: Hashable {
+    case images
+    case volumes
+}
+
+struct ServiceNotice: Equatable {
+    let message: String
+    let isError: Bool
+}
+
 @MainActor
 final class ColimaService: ObservableObject {
 
@@ -108,6 +118,10 @@ final class ColimaService: ObservableObject {
     @Published private(set) var volumes: [DockerVolume] = []
     @Published private(set) var unusedVolumes: Set<String> = []
     @Published private(set) var busy: String?
+    @Published private(set) var pruning: Set<PruneTarget> = []
+    @Published private(set) var notice: ServiceNotice?
+
+    private var noticeTask: Task<Void, Never>?
 
     let colima: String?
     let docker: String?
@@ -179,7 +193,7 @@ final class ColimaService: ObservableObject {
     }()
 
 
-    private nonisolated static func run(_ path: String, _ args: [String]) async -> (code: Int32, out: String) {
+    private nonisolated static func run(_ path: String, _ args: [String]) async -> (code: Int32, out: String, err: String) {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let process = Process()
@@ -191,22 +205,29 @@ final class ColimaService: ObservableObject {
                 process.environment = environment
 
                 let stdout = Pipe()
+                let stderr = Pipe()
                 process.standardOutput = stdout
-                process.standardError = Pipe()
+                process.standardError = stderr
 
                 do {
                     try process.run()
                 } catch {
-                    continuation.resume(returning: (-1, ""))
+                    continuation.resume(returning: (-1, "", error.localizedDescription))
                     return
                 }
 
+                let errQueue = DispatchQueue(label: "limon.stderr")
+                var errData = Data()
+                errQueue.async { errData = stderr.fileHandleForReading.readDataToEndOfFile() }
+
                 let data = stdout.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                errQueue.sync {}
 
                 continuation.resume(returning: (
                     process.terminationStatus,
-                    String(data: data, encoding: .utf8) ?? ""
+                    String(data: data, encoding: .utf8) ?? "",
+                    String(data: errData, encoding: .utf8) ?? ""
                 ))
             }
         }
@@ -282,6 +303,45 @@ final class ColimaService: ObservableObject {
     func dockerAction(_ args: [String], label: String) {
         guard let docker else { return }
         perform(docker, args, label: label)
+    }
+
+    func prune(_ target: PruneTarget) {
+        guard let docker, !pruning.contains(target) else { return }
+        let args = target == .images ? ["image", "prune", "-f"] : ["volume", "prune", "-f"]
+        let noun = target == .images ? "images" : "volumes"
+        Task {
+            pruning.insert(target)
+            let result = await Self.run(docker, args)
+            await refresh()
+            pruning.remove(target)
+
+            if result.code == 0 {
+                let reclaimed = result.out
+                    .split(separator: "\n")
+                    .first { $0.hasPrefix("Total reclaimed space:") }
+                    .flatMap { $0.split(separator: ":").last }
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                let detail = reclaimed.map { ", \($0) reclaimed" } ?? ""
+                showNotice(ServiceNotice(message: "Pruned \(noun)\(detail)", isError: false))
+            } else {
+                let reason = result.err
+                    .split(separator: "\n")
+                    .first
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                showNotice(ServiceNotice(message: reason?.isEmpty == false ? reason! : "Failed to prune \(noun)",
+                                         isError: true))
+            }
+        }
+    }
+
+    private func showNotice(_ new: ServiceNotice) {
+        noticeTask?.cancel()
+        notice = new
+        noticeTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            notice = nil
+        }
     }
 
     private func perform(_ path: String, _ args: [String], label: String) {

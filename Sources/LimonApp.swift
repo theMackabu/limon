@@ -98,6 +98,30 @@ struct MenuPanel: View {
             Divider()
             settingsRow
         }
+        .overlay(alignment: .bottom) { noticeToast }
+        .animation(.spring(duration: 0.25), value: service.notice)
+    }
+
+    @ViewBuilder
+    private var noticeToast: some View {
+        if let notice = service.notice {
+            HStack(spacing: 6) {
+                Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(notice.isError ? Color.red : Color.green)
+                Text(notice.message)
+                    .font(.caption)
+                    .lineLimit(2)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.quaternary))
+            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
     }
 
 
@@ -277,9 +301,9 @@ struct MenuPanel: View {
                 }
             }
             if dangling > 0 {
-                PruneRow(label: dangling == 1 ? "1 dangling image" : "\(dangling) dangling images") {
-                    service.dockerAction(["image", "prune", "-f"],
-                                         label: "pruning images")
+                PruneRow(label: dangling == 1 ? "1 dangling image" : "\(dangling) dangling images",
+                         isPruning: service.pruning.contains(.images)) {
+                    service.prune(.images)
                 }
             }
         }
@@ -309,9 +333,9 @@ struct MenuPanel: View {
             }
             let unused = service.unusedVolumes.count
             if unused > 0 {
-                PruneRow(label: unused == 1 ? "1 unused volume" : "\(unused) unused volumes") {
-                    service.dockerAction(["volume", "prune", "-f"],
-                                         label: "pruning volumes")
+                PruneRow(label: unused == 1 ? "1 unused volume" : "\(unused) unused volumes",
+                         isPruning: service.pruning.contains(.volumes)) {
+                    service.prune(.volumes)
                 }
             }
         }
@@ -818,6 +842,7 @@ private struct ItemRow: View {
 
 private struct PruneRow: View {
     let label: String
+    let isPruning: Bool
     let action: () -> Void
 
     var body: some View {
@@ -826,9 +851,15 @@ private struct PruneRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
-            Button("Prune", action: action)
-                .controlSize(.mini)
+            if isPruning {
+                ProgressView()
+                    .controlSize(.mini)
+            } else {
+                Button("Prune", action: action)
+                    .controlSize(.mini)
+            }
         }
+        .frame(minHeight: 16)
         .padding(.leading, 13)
     }
 }
