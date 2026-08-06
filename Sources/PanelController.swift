@@ -164,9 +164,12 @@ final class PanelController: NSObject, NSWindowDelegate {
             let windowID = event.window.map(ObjectIdentifier.init)
             let hasCommand = event.modifierFlags.contains(.command)
             let handled = MainActor.assumeIsolated { () -> Bool in
-                guard let self, !hasCommand,
-                      let buttonWindow = self.statusItem.button?.window,
+                guard let self, let buttonWindow = self.statusItem.button?.window,
                       windowID == ObjectIdentifier(buttonWindow) else { return false }
+                if hasCommand {
+                    self.closeAttached()
+                    return false
+                }
                 self.statusClicked()
                 return true
             }
@@ -207,7 +210,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         let size = panel.preferredSize
         let buttonFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
 
-        var x = buttonFrame.midX - size.width / 2
+        var x = buttonFrame.minX - 8
         if let visible = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame {
             x = min(x, visible.maxX - size.width - 8)
             x = max(x, visible.minX + 8)
