@@ -13,8 +13,8 @@ shells and logs, restart workloads, and review images and volumes.
 
 ## Requirements
 
-- macOS 15 or later
-- Xcode Command Line Tools
+- macOS 26 or later
+- Xcode 26 or later (macOS 26 SDK) to build
 - [Colima](https://github.com/abiosoft/colima) and the Docker CLI
 
 ## Build

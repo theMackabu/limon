@@ -54,23 +54,12 @@ final class LimonPanel: NSPanel {
         let hostingView = NSHostingView(rootView: view)
         hostingView.safeAreaRegions = []
 
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.cornerRadius = 16
-            glass.contentView = hostingView
-            backgroundColor = .clear
-            isOpaque = false
-            contentView = glass
-        } else {
-            let effect = NSVisualEffectView()
-            effect.material = .popover
-            effect.blendingMode = .behindWindow
-            effect.state = .active
-            contentView = effect
-            hostingView.frame = effect.bounds
-            hostingView.autoresizingMask = [.width, .height]
-            effect.addSubview(hostingView)
-        }
+        let glass = NSGlassEffectView()
+        glass.cornerRadius = 16
+        glass.contentView = hostingView
+        backgroundColor = .clear
+        isOpaque = false
+        contentView = glass
         hosting = hostingView
     }
 
@@ -172,13 +161,16 @@ final class PanelController: NSObject, NSWindowDelegate {
         super.init()
 
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-            MainActor.assumeIsolated {
-                guard let self, let buttonWindow = self.statusItem.button?.window,
-                      event.window === buttonWindow,
-                      !event.modifierFlags.contains(.command) else { return event }
+            let windowID = event.window.map(ObjectIdentifier.init)
+            let hasCommand = event.modifierFlags.contains(.command)
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self, !hasCommand,
+                      let buttonWindow = self.statusItem.button?.window,
+                      windowID == ObjectIdentifier(buttonWindow) else { return false }
                 self.statusClicked()
-                return nil
+                return true
             }
+            return handled ? nil : event
         }
         updateTitle()
 
@@ -299,14 +291,15 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let local = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown],
             handler: { [weak self] event in
+                let windowID = event.window.map(ObjectIdentifier.init)
                 MainActor.assumeIsolated {
-                    guard let self, let attached = self.attachedPanel else { return event }
-                    if let eventWindow = event.window, eventWindow !== attached,
-                       eventWindow !== self.statusItem.button?.window {
+                    guard let self, let attached = self.attachedPanel, let windowID else { return }
+                    let buttonID = self.statusItem.button?.window.map(ObjectIdentifier.init)
+                    if windowID != ObjectIdentifier(attached), windowID != buttonID {
                         self.closeAttached()
                     }
-                    return event
                 }
+                return event
             }
         ) {
             eventMonitors.append(local)
@@ -315,11 +308,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         if let keys = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown],
             handler: { [weak self] event in
-                MainActor.assumeIsolated {
-                    guard let self, self.attachedPanel != nil, event.keyCode == 53 else { return event }
+                guard event.keyCode == 53 else { return event }
+                let consumed = MainActor.assumeIsolated { () -> Bool in
+                    guard let self, self.attachedPanel != nil else { return false }
                     self.closeAttached()
-                    return nil
+                    return true
                 }
+                return consumed ? nil : event
             }
         ) {
             eventMonitors.append(keys)
