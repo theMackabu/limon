@@ -165,6 +165,23 @@ final class LimonPanel: NSPanel, AnchoredPanel {
         repositionTrafficLights()
     }
 
+    var onMiniaturize: (() -> Void)?
+
+    override func miniaturize(_ sender: Any?) {
+        if let onMiniaturize {
+            onMiniaturize()
+        } else {
+            super.miniaturize(sender)
+        }
+    }
+
+    func completeDetach(alwaysOnTop: Bool) {
+        styleMask.remove(.nonactivatingPanel)
+        isFloatingPanel = false
+        hidesOnDeactivate = false
+        applyLevel(alwaysOnTop: alwaysOnTop)
+    }
+
     func transferContentView() -> NSView? {
         let content = contentView
         contentView = nil
@@ -299,19 +316,23 @@ final class PanelController: NSObject, NSWindowDelegate {
             }
             guard let self, let panel,
                   self.detachedPanels.contains(where: { $0 === panel }) else { return }
-            self.promote(panel)
+            panel.completeDetach(alwaysOnTop: self.alwaysOnTop)
+            panel.onMiniaturize = { [weak self, weak panel] in
+                guard let self, let panel else { return }
+                self.promoteAndMinimize(panel)
+            }
             NSApp.setActivationPolicy(.regular)
+            NSApp.activate()
         }
     }
 
-    private func promote(_ panel: LimonPanel) {
+    private func promoteAndMinimize(_ panel: LimonPanel) {
         let window = DetachedWindow(panelState: panel.panelState)
         window.delegate = self
         window.isRepositioning = true
         window.setFrame(panel.frame, display: false)
         window.isRepositioning = false
         window.anchorTopLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
-        window.contentView = panel.transferContentView()
         panel.panelState.host = window
         window.applyLevel(alwaysOnTop: alwaysOnTop)
 
@@ -319,14 +340,20 @@ final class PanelController: NSObject, NSWindowDelegate {
             detachedPanels[index] = window
         }
 
-        window.orderFrontRegardless()
-        window.repositionTrafficLights()
+        window.animationBehavior = .documentWindow
         panel.delegate = nil
-        panel.close()
+        panel.hasShadow = false
+
+        window.contentView = panel.transferContentView()
+        window.makeKeyAndOrderFront(nil)
+        panel.orderOut(nil)
+
+        window.repositionTrafficLights()
+        window.miniaturize(nil)
     }
 
     func restoreMinimized() {
-        NSApp.activate(ignoringOtherApps: true)
+        NSApp.activate()
         for panel in detachedPanels where panel.isMiniaturized {
             panel.deminiaturize(nil)
             panel.makeKeyAndOrderFront(nil)
@@ -434,6 +461,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             statusItem.button?.highlight(false)
         }
         detachedPanels.removeAll { $0 === window }
+        guard window.panelState.isDetached else { return }
         if detachedPanels.isEmpty {
             NSApp.setActivationPolicy(.accessory)
         }
