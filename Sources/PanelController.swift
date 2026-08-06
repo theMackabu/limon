@@ -125,6 +125,8 @@ final class LimonPanel: NSPanel, AnchoredPanel {
 
     override var canBecomeKey: Bool { true }
 
+    override var canBecomeMain: Bool { panelState.isDetached }
+
     func setContent<Content: View>(_ view: Content) {
         let hostingView = NSHostingView(rootView: view)
         hostingView.safeAreaRegions = []
@@ -179,6 +181,8 @@ final class LimonPanel: NSPanel, AnchoredPanel {
         styleMask.remove(.nonactivatingPanel)
         isFloatingPanel = false
         hidesOnDeactivate = false
+        becomesKeyOnlyIfNeeded = false
+        isExcludedFromWindowsMenu = false
         applyLevel(alwaysOnTop: alwaysOnTop)
     }
 
@@ -197,6 +201,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private var detachedPanels: [any AnchoredPanel] = []
     private var eventMonitors: [Any] = []
     private var clickMonitor: Any?
+    private var focusMonitors: [Any] = []
     private var titleSink: AnyCancellable?
     private var defaultsObserver: Any?
     private var dragTracker: Task<Void, Never>?
@@ -228,6 +233,7 @@ final class PanelController: NSObject, NSWindowDelegate {
             return handled ? nil : event
         }
         updateTitle()
+        installFocusMonitors()
 
         titleSink = service.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in self?.updateTitle() }
@@ -245,6 +251,34 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     private func updateTitle() {
         statusItem.button?.title = service.title
+    }
+
+    private func installFocusMonitors() {
+        let handler: @MainActor (NSPoint) -> Void = { [weak self] location in
+            guard let self, !self.detachedPanels.isEmpty else { return }
+            let topmost = NSWindow.windowNumber(at: location, belowWindowWithWindowNumber: 0)
+            guard let target = self.detachedPanels.first(where: { $0.windowNumber == topmost }),
+                  !target.isMiniaturized else { return }
+            if !NSApp.isActive || !target.isKeyWindow {
+                NSApp.activate()
+                target.makeKeyAndOrderFront(nil)
+            }
+        }
+
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in handler(location) }
+        } {
+            focusMonitors.append(global)
+        }
+
+        if let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+            let location = NSEvent.mouseLocation
+            MainActor.assumeIsolated { handler(location) }
+            return event
+        } {
+            focusMonitors.append(local)
+        }
     }
 
     private func statusClicked() {
