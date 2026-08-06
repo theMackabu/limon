@@ -5,6 +5,7 @@ import Combine
 @MainActor
 final class PanelState: ObservableObject {
     @Published var isDetached = false
+    weak var host: (any AnchoredPanel)?
 }
 
 private struct DismissPanelKey: EnvironmentKey {
@@ -18,13 +19,87 @@ extension EnvironmentValues {
     }
 }
 
-final class LimonPanel: NSPanel {
+@MainActor
+protocol AnchoredPanel: AnyObject where Self: NSWindow {
+    var panelState: PanelState { get }
+    var anchorTopLeft: NSPoint { get set }
+    var trafficAnchor: NSPoint? { get set }
+    var isRepositioning: Bool { get set }
+}
+
+extension AnchoredPanel {
+    func place(topLeft: NSPoint, size: NSSize) {
+        anchorTopLeft = topLeft
+        isRepositioning = true
+        setFrame(NSRect(x: topLeft.x, y: topLeft.y - size.height,
+                        width: size.width, height: size.height),
+                 display: true)
+        isRepositioning = false
+    }
+
+    func resizeContent(to size: CGSize) {
+        guard size.width > 0, size.height > 0, size != frame.size else { return }
+        place(topLeft: anchorTopLeft, size: NSSize(width: size.width, height: size.height))
+    }
+
+    func noteUserMovement() -> Bool {
+        if isRepositioning { return false }
+        anchorTopLeft = NSPoint(x: frame.minX, y: frame.maxY)
+        return true
+    }
+
+    func repositionTrafficLights() {
+        guard panelState.isDetached,
+              let close = standardWindowButton(.closeButton) else { return }
+        if trafficAnchor == nil { trafficAnchor = close.frame.origin }
+        guard let anchor = trafficAnchor else { return }
+
+        let downward: CGFloat = close.superview?.isFlipped == true ? 3 : -3
+        let buttons = [close, standardWindowButton(.miniaturizeButton)].compactMap { $0 }
+        for (index, button) in buttons.enumerated() {
+            button.setFrameOrigin(NSPoint(x: anchor.x + 20 * CGFloat(index),
+                                          y: anchor.y + downward))
+        }
+    }
+
+    func applyLevel(alwaysOnTop: Bool) {
+        guard panelState.isDetached else { return }
+        level = alwaysOnTop ? .floating : .normal
+        collectionBehavior = alwaysOnTop ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.managed]
+    }
+}
+
+final class DetachedWindow: NSWindow, AnchoredPanel {
+    let panelState: PanelState
+    var anchorTopLeft = NSPoint.zero
+    var trafficAnchor: NSPoint?
+    var isRepositioning = false
+
+    init(panelState: PanelState) {
+        self.panelState = panelState
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 400),
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
+        isReleasedWhenClosed = false
+        backgroundColor = .clear
+        isOpaque = false
+        animationBehavior = .documentWindow
+        standardWindowButton(.zoomButton)?.isHidden = true
+    }
+}
+
+final class LimonPanel: NSPanel, AnchoredPanel {
     let panelState = PanelState()
 
     private weak var hosting: NSView?
-    private var anchorTopLeft = NSPoint.zero
-    private var trafficAnchor: NSPoint?
-    private(set) var isRepositioning = false
+    var anchorTopLeft = NSPoint.zero
+    var trafficAnchor: NSPoint?
+    var isRepositioning = false
 
     init() {
         super.init(
@@ -67,26 +142,6 @@ final class LimonPanel: NSPanel {
         hosting?.fittingSize ?? NSSize(width: 320, height: 400)
     }
 
-    func place(topLeft: NSPoint, size: NSSize) {
-        anchorTopLeft = topLeft
-        isRepositioning = true
-        setFrame(NSRect(x: topLeft.x, y: topLeft.y - size.height,
-                        width: size.width, height: size.height),
-                 display: true)
-        isRepositioning = false
-    }
-
-    func resizeContent(to size: CGSize) {
-        guard size.width > 0, size.height > 0, size != frame.size else { return }
-        place(topLeft: anchorTopLeft, size: NSSize(width: size.width, height: size.height))
-    }
-
-    func noteUserMovement() -> Bool {
-        if isRepositioning { return false }
-        anchorTopLeft = NSPoint(x: frame.minX, y: frame.maxY)
-        return true
-    }
-
     func snapBack(to origin: NSPoint) {
         isRepositioning = true
         anchorTopLeft = NSPoint(x: origin.x, y: origin.y + frame.height)
@@ -110,30 +165,10 @@ final class LimonPanel: NSPanel {
         repositionTrafficLights()
     }
 
-    func completeDetach(alwaysOnTop: Bool) {
-        styleMask.remove(.nonactivatingPanel)
-        isFloatingPanel = false
-        applyLevel(alwaysOnTop: alwaysOnTop)
-    }
-
-    func repositionTrafficLights() {
-        guard panelState.isDetached,
-              let close = standardWindowButton(.closeButton) else { return }
-        if trafficAnchor == nil { trafficAnchor = close.frame.origin }
-        guard let anchor = trafficAnchor else { return }
-
-        let downward: CGFloat = close.superview?.isFlipped == true ? 3 : -3
-        let buttons = [close, standardWindowButton(.miniaturizeButton)].compactMap { $0 }
-        for (index, button) in buttons.enumerated() {
-            button.setFrameOrigin(NSPoint(x: anchor.x + 20 * CGFloat(index),
-                                          y: anchor.y + downward))
-        }
-    }
-
-    func applyLevel(alwaysOnTop: Bool) {
-        guard panelState.isDetached else { return }
-        level = alwaysOnTop ? .floating : .normal
-        collectionBehavior = alwaysOnTop ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.managed]
+    func transferContentView() -> NSView? {
+        let content = contentView
+        contentView = nil
+        return content
     }
 }
 
@@ -142,7 +177,7 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let service: ColimaService
     private let statusItem: NSStatusItem
     private var attachedPanel: LimonPanel?
-    private var detachedPanels: [LimonPanel] = []
+    private var detachedPanels: [any AnchoredPanel] = []
     private var eventMonitors: [Any] = []
     private var clickMonitor: Any?
     private var titleSink: AnyCancellable?
@@ -227,14 +262,17 @@ final class PanelController: NSObject, NSWindowDelegate {
         let panel = LimonPanel()
         panel.delegate = self
 
+        let state = panel.panelState
+        state.host = panel
+
         let root = MenuPanel(service: service)
-            .environmentObject(panel.panelState)
+            .environmentObject(state)
             .environment(\.dismissPanel, { [weak self, weak panel] in
                 guard let self, let panel, panel === self.attachedPanel else { return }
                 self.closeAttached()
             })
-            .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak panel] size in
-                panel?.resizeContent(to: size)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                state.host?.resizeContent(to: size)
             }
 
         panel.setContent(root)
@@ -261,14 +299,37 @@ final class PanelController: NSObject, NSWindowDelegate {
             }
             guard let self, let panel,
                   self.detachedPanels.contains(where: { $0 === panel }) else { return }
-            panel.completeDetach(alwaysOnTop: self.alwaysOnTop)
+            self.promote(panel)
             NSApp.setActivationPolicy(.regular)
         }
     }
 
+    private func promote(_ panel: LimonPanel) {
+        let window = DetachedWindow(panelState: panel.panelState)
+        window.delegate = self
+        window.isRepositioning = true
+        window.setFrame(panel.frame, display: false)
+        window.isRepositioning = false
+        window.anchorTopLeft = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        window.contentView = panel.transferContentView()
+        panel.panelState.host = window
+        window.applyLevel(alwaysOnTop: alwaysOnTop)
+
+        if let index = detachedPanels.firstIndex(where: { $0 === panel }) {
+            detachedPanels[index] = window
+        }
+
+        window.orderFrontRegardless()
+        window.repositionTrafficLights()
+        panel.delegate = nil
+        panel.close()
+    }
+
     func restoreMinimized() {
+        NSApp.activate(ignoringOtherApps: true)
         for panel in detachedPanels where panel.isMiniaturized {
             panel.deminiaturize(nil)
+            panel.makeKeyAndOrderFront(nil)
         }
     }
 
@@ -337,12 +398,12 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
-        (notification.object as? LimonPanel)?.repositionTrafficLights()
+        (notification.object as? any AnchoredPanel)?.repositionTrafficLights()
     }
 
     func windowDidMove(_ notification: Notification) {
-        guard let panel = notification.object as? LimonPanel else { return }
-        _ = panel.noteUserMovement()
+        guard let window = notification.object as? any AnchoredPanel else { return }
+        _ = window.noteUserMovement()
     }
 
     private func beginDragTracking(_ panel: LimonPanel) {
@@ -366,13 +427,13 @@ final class PanelController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard let panel = notification.object as? LimonPanel else { return }
-        if panel === attachedPanel {
+        guard let window = notification.object as? any AnchoredPanel else { return }
+        if let panel = window as? LimonPanel, panel === attachedPanel {
             attachedPanel = nil
             removeMonitors()
             statusItem.button?.highlight(false)
         }
-        detachedPanels.removeAll { $0 === panel }
+        detachedPanels.removeAll { $0 === window }
         if detachedPanels.isEmpty {
             NSApp.setActivationPolicy(.accessory)
         }
