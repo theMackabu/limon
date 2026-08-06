@@ -16,12 +16,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Build app
+      - name: Build app and disk image
         run: make package
 
       - name: Upload app
         uses: actions/upload-artifact@v6
         with:
           name: Limon-macOS
-          path: Limon.app.zip
+          path: |
+            Build/Limon.app.zip
+            Build/Limon.dmg
           if-no-files-found: error

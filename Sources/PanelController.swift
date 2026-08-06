@@ -265,18 +265,24 @@ final class PanelController: NSObject, NSWindowDelegate {
             }
         }
 
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { _ in
-            let location = NSEvent.mouseLocation
-            Task { @MainActor in handler(location) }
-        } {
+        if let global = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown],
+            handler: { _ in
+                let location = NSEvent.mouseLocation
+                Task { @MainActor in handler(location) }
+            }
+        ) {
             focusMonitors.append(global)
         }
 
-        if let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-            let location = NSEvent.mouseLocation
-            MainActor.assumeIsolated { handler(location) }
-            return event
-        } {
+        if let local = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown],
+            handler: { event in
+                let location = NSEvent.mouseLocation
+                MainActor.assumeIsolated { handler(location) }
+                return event
+            }
+        ) {
             focusMonitors.append(local)
         }
     }

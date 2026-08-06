@@ -1,5 +1,7 @@
-APP := Limón.app
-ARCHIVE := Limon.app.zip
+BUILD := Build
+APP := $(BUILD)/Limón.app
+DMG := $(BUILD)/Limon.dmg
+ARCHIVE := $(BUILD)/Limon.app.zip
 
 .DEFAULT_GOAL := build
 
@@ -16,8 +18,7 @@ run: build
 	open "$(APP)"
 
 install: build
-	ditto "$(APP)" "/Applications/$(APP)"
+	ditto "$(APP)" "/Applications/Limón.app"
 
 clean:
-	rm -rf "$(APP)" AppIcon.iconset
-	rm -f "$(ARCHIVE)"
+	rm -rf "$(BUILD)" AppIcon.iconset
